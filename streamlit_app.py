@@ -371,51 +371,47 @@ def classify_pedestrian_difficulty(traffic_level):
     else:
         return "Easy Crossing"
 
-def run_static_camera_detection(frame, model, conf_threshold=0.2, iou_threshold=0.5):  # Lowered Confidence
+def run_static_camera_detection(frame, model, conf_threshold=0.3, iou_threshold=0.5):
     global tracked_vehicles, last_traffic_update, traffic_level, traffic_history, class_counts, vehicle_arrival_times, counted_vehicle_ids
 
     frame_height, frame_width = frame.shape[:2]
 
     roi_x1 = 0
-    roi_y1 = 0 #int(frame_height * 0.5)  # REMOVE RESTRICTION: Start ROI from top for counting ALL vehicles
-
+    roi_y1 = int(frame_height * 0.5)  # Bottom half ROI start
     roi_x2 = frame_width
     roi_y2 = frame_height
+
 
     results = model.track(frame, persist=True, conf=conf_threshold, iou=iou_threshold, imgsz=1280, verbose=False)
 
     annotated_frame = frame.copy()
 
-    #Vehicle count set
-    vehicle_count = 0
-    counted_ids_in_frame = set() # to count id in the frame
     if results and results[0] and results[0].boxes:
         for box in results[0].boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf = box.conf[0].item()
             cls = int(box.cls[0].item())
-            obj_id = int(box.id[0].item())  # Get Object ID
+            obj_id = int(box.id[0].item()) #Get Object ID
 
             box_area = (x2 - x1) * (y2 - y1)
-            is_bottom_half = y1 > frame_height * 0.5
 
             if cls >= len(class_names) or conf < conf_threshold:
                 continue
 
             if cls in vehicle_classes:
-                color = class_colors.get(cls, (255, 255, 255))
+                # Limit bounding box display and counting to bottom half (and check ROI)
+                if y1 > frame_height * 0.5 and roi_x1 < x1 and roi_x2 > x2 and roi_y1 < y1 and roi_y2 > y2:
+                    color = class_colors.get(cls, (255, 255, 255))
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2) # draw bound box
+                    cv2.putText(annotated_frame, f"{class_names[cls]} {conf:.2f} ID: {obj_id}", (x1, y1 - 10), #draw text
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 2)
 
-                # Draw bounding boxes only for the bottom half
-                if is_bottom_half:
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, f"{class_names[cls]} {conf:.2f} ID: {obj_id}",
-                                (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 2)
-                    # Ensure unique ID
-                    if (obj_id not in counted_vehicle_ids or time.time() - counted_vehicle_ids[obj_id] > RECOUNT_DELAY ) and box_area>5000 :
+                    # Count each vehicle ID only once, or after a time delay
+                    current_time = time.time()
+                    if obj_id not in counted_vehicle_ids or (current_time - counted_vehicle_ids[obj_id] > RECOUNT_DELAY and box_area > 5000) : #Check box are also
+                        counted_vehicle_ids[obj_id] = current_time
+                        class_counts[class_names[cls]] += 1
 
-                            counted_vehicle_ids[obj_id] = time.time()
-                            vehicle_count += 1
-        class_counts['car'] = vehicle_count
 
         current_time = time.time()
         time_window = 1
@@ -504,8 +500,7 @@ def process_video2(source, model, options=None):
             try:
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame = auto_rotate(frame)  # Apply auto-rotation here
-                annotated_frame, traffic_level, pedestrian_difficulty = run_static_camera_detection(frame, model, conf_threshold = 0.2) #Setting car threshold
-
+                annotated_frame, traffic_level, pedestrian_difficulty = run_static_camera_detection(frame, model, conf_threshold = 0.3)
                 frame_count += 1
                 elapsed_time = time.time() - start_time
                 if elapsed_time > 0:
